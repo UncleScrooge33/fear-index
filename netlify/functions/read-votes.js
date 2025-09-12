@@ -1,5 +1,5 @@
 ﻿// netlify/functions/read-votes.js
-// Env vars requises : NETLIFY_TOKEN (+ optionnel MY_SITE_ID si SITE_ID non injecté)
+// Env vars : NETLIFY_TOKEN (+ optionnel MY_SITE_ID si SITE_ID non injecté)
 
 exports.handler = async (event) => {
   try {
@@ -9,14 +9,14 @@ exports.handler = async (event) => {
 
     const url = new URL(event.rawUrl);
     const tf  = (url.searchParams.get('tf') || '1D').toUpperCase();
-    const includeSpam = url.searchParams.get('includeSpam') === '1'; // ignoré côté front
+    const includeSpam = url.searchParams.get('includeSpam') === '1'; // non utilisé côté front
 
-    // Buckets terminés uniquement ; point = moyenne glissante des 5 dernières moyennes de bucket
+    // Buckets terminés ; point = moyenne glissante des 5 dernières moyennes de bucket
     const cfg = {
       '1H':  { spanMs: 60*60*1000,         stepMs: 1*60*1000,      fmt: d=>d.toISOString().slice(11,16) }, // HH:MM
       '1D':  { spanMs: 24*60*60*1000,      stepMs: 30*60*1000,     fmt: d=>d.toISOString().slice(11,16) },
       '7D':  { spanMs: 7*24*60*60*1000,    stepMs: 8*60*60*1000,   fmt: d=>d.toISOString().slice(5,10)  }, // MM-DD
-      '1M':  { spanMs: 30*24*60*60*1000,   stepMs: 24*60*60*1000,  fmt: d=>d.toISOString().slice(0,10)  }, // YYYY-MM-DD (1 jour)
+      '1M':  { spanMs: 30*24*60*60*1000,   stepMs: 24*60*60*1000,  fmt: d=>d.toISOString().slice(0,10)  }, // YYYY-MM-DD
       '90D': { spanMs: 90*24*60*60*1000,   stepMs: 3*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10)  },
       '1Y':  { spanMs: 365*24*60*60*1000,  stepMs: 14*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10) },
     }[tf] || { spanMs: 24*60*60*1000, stepMs: 30*60*1000, fmt: d=>d.toISOString().slice(11,16) };
@@ -56,7 +56,7 @@ exports.handler = async (event) => {
       .filter(r => !Number.isNaN(r.t) && !Number.isNaN(r.v) && r.t >= start && r.t <= endClosed)
       .sort((a,b)=>a.t-b.t);
 
-    // 4) Buckets fixes
+    // 4) Buckets fixes (moyenne 50 si aucun vote)
     const buckets = [];
     for (let t = start; t <= endClosed; t += cfg.stepMs) buckets.push({ t, vals: [] });
 
@@ -66,16 +66,13 @@ exports.handler = async (event) => {
       if (idx >= 0 && idx < buckets.length) buckets[idx].vals.push(r.v);
     }
 
-    // Moyenne simple par bucket (carry-forward si vide)
     const bucketMeans = [];
-    let lastMean = 50;
     for (const b of buckets) {
       let m;
       if (b.vals.length > 0) m = b.vals.reduce((a,c)=>a+c,0) / b.vals.length;
-      else m = lastMean;
+      else m = 50; // ← changement : pas de vote = 50
       m = Math.max(0, Math.min(100, m));
       bucketMeans.push({ t: b.t, m, n: b.vals.length });
-      lastMean = m;
     }
 
     // 5) Point = moyenne glissante des 5 dernières moyennes de bucket

@@ -33,7 +33,9 @@
   .voteBtn.disabled{opacity:.5;cursor:not-allowed;filter:grayscale(30%)}
   .muted{color:#9aa3b2}.ok{color:#22c55e}.err{color:#f97316}
 
-  .info{margin-top:12px;color:var(--muted);font-size:14px;line-height:1.5}
+  .infoCard{margin-top:16px}
+  .infoTitle{margin:0 0 10px;font-size:18px;font-weight:700}
+  .infoText{color:var(--muted);font-size:14px;line-height:1.55;margin:0}
 
   @media (max-width:820px){
     .chartRow{grid-template-columns:1fr}
@@ -67,15 +69,7 @@
       <button data-tf="90D">90D</button>
       <button data-tf="1Y">1Y</button>
     </div>
-    <div>
-      <canvas id="chart"></canvas>
-      <p class="info">
-        This chart shows the community’s perceived “fear vs. confidence” about humanity (0=high fear, 100=high confidence).
-        Each point is computed once the time bucket ends (1H: 1 min · 1D: 30 min · 7D: 8 h · <strong>1M: 1 day</strong> · 90D: 3 days · 1Y: 2 weeks).
-        The plotted value is a moving average of the last 5 buckets to highlight trend. Hover a point to see its exact value and how many votes it contains.
-        You can cast one vote every 12 hours using the slider below.
-      </p>
-    </div>
+    <div><canvas id="chart"></canvas></div>
   </div>
 
   <div class="card sliderCard">
@@ -93,6 +87,19 @@
       <span id="msg" class="muted"></span>
     </div>
   </div>
+
+  <!-- ===== Bloc d'explication (en bas, après le slider) ===== -->
+  <div class="card infoCard">
+    <h3 class="infoTitle">What this index shows</h3>
+    <p class="infoText">
+      The Humanity Fear Index captures the community’s perceived “fear vs. confidence” (0 = high fear, 100 = high confidence).
+      Points are computed only when a time bucket ends:
+      <strong>1H</strong>: 1 min · <strong>1D</strong>: 30 min · <strong>7D</strong>: 8 h · <strong>1M</strong>: 1 day · <strong>90D</strong>: 3 days · <strong>1Y</strong>: 2 weeks.
+      Each point equals the moving average of the last 5 bucket means. If a bucket receives no votes, its mean defaults to 50 — so the curve gradually returns to neutral when activity stops.
+      Hover any point to see its exact value and how many votes it includes. You can vote once every 12 hours using the slider above.
+    </p>
+  </div>
+
 </div>
 
 <script>
@@ -162,12 +169,12 @@
   document.querySelector('.scale button[data-tf="1H"]').classList.add('active');
 
   function pickTickStep(tf){
-    if (tf==='1H')  return 5;  // 1 min buckets → label every 5 min
-    if (tf==='1D')  return 4;  // 30 min → label every 2 h
-    if (tf==='7D')  return 3;  // 8 h → label every 24 h
-    if (tf==='1M')  return 3;  // 1 day → label every 3 days (lisible)
-    if (tf==='90D') return 3;  // 3 days → label ~weekly
-    if (tf==='1Y')  return 2;  // 2 weeks → label ~every 4 weeks
+    if (tf==='1H')  return 5;
+    if (tf==='1D')  return 4;
+    if (tf==='7D')  return 3;
+    if (tf==='1M')  return 3;
+    if (tf==='90D') return 3;
+    if (tf==='1Y')  return 2;
     return 4;
   }
   window.__tickStep = pickTickStep(timeframe);
@@ -197,8 +204,8 @@
     const j = await r.json();
 
     window.__tickStep = pickTickStep(timeframe);
-    chart.data.labels = j.points.map(p=>p.t);
-    chart.data.datasets[0].data = j.points.map(p=>p.v);
+    chart.data.labels  = j.points.map(p=>p.t);
+    chart.data.datasets[0].data    = j.points.map(p=>p.v);
     chart.data.datasets[0]._counts = j.points.map(p=>p.n);
     chart.update();
 
