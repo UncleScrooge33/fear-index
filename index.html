@@ -85,7 +85,7 @@
       data: [],
       borderWidth: 2,
       pointRadius: 0,
-      tension: .35,
+      tension: .35,              // lissage visuel entre points (pas de recalcul)
       borderColor: '#7dd3fc',
       fill: true,
       backgroundColor: (ctx)=>{
@@ -113,6 +113,7 @@
     }
   });
 
+  /* ===== Timeframe & ticks ===== */
   const tfButtons = Array.from(document.querySelectorAll('.scale button'));
   let timeframe = '1D';
   window.__tickStep = 12;
@@ -121,30 +122,47 @@
     if (tf==='1H')  return 5;  // label every 5 min
     if (tf==='1D')  return 4;  // label every 2 h (30 min buckets)
     if (tf==='7D')  return 3;  // label every 24 h (8 h buckets)
-    if (tf==='90D') return 3;  // label ~every 7 days (3 d buckets)
-    if (tf==='1Y')  return 2;  // label ~every 4 weeks (2 w buckets)
+    if (tf==='90D') return 3;  // ~every 7 days (3 d buckets)
+    if (tf==='1Y')  return 2;  // ~every 4 weeks (2 w buckets)
     return 4;
+  }
+
+  /* ===== Scheduler: refresh only at bucket boundaries ===== */
+  let nextTimer = null;
+  function scheduleNext(meta){
+    if (nextTimer) clearTimeout(nextTimer);
+    // next point = end of next bucket
+    const nextAt = (meta?.end ?? Date.now()) + (meta?.stepMs ?? 60000);
+    const delay = Math.max(250, nextAt - Date.now());
+    nextTimer = setTimeout(() => refresh(), delay);
   }
 
   tfButtons.forEach(b=>b.addEventListener('click', ()=>{
     tfButtons.forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
     timeframe = b.dataset.tf;
+    if (nextTimer) clearTimeout(nextTimer);
     window.__tickStep = pickTickStep(timeframe);
+    // reload series for new timeframe, then reschedule
     refresh();
   }));
 
+  /* ===== Data fetching ===== */
   async function refresh(){
     const params = new URLSearchParams(location.search);
     const devMode = params.get('dev') === '1';
     const url = '/.netlify/functions/read-votes?tf=' + timeframe + (devMode ? '&includeSpam=1' : '');
     const r = await fetch(url, { cache:'no-store' });
     const j = await r.json();
+
     window.__tickStep = pickTickStep(timeframe);
     chart.data.labels = j.points.map(p=>p.t);
     chart.data.datasets[0].data = j.points.map(p=>p.v);
     chart.update();
     document.getElementById('current').textContent = '— ' + (j.current ?? 50) + '/100';
+
+    // schedule next update exactly at the end of the next bucket
+    scheduleNext(j.meta);
   }
 
   /* ===== Slider + color badge ===== */
@@ -160,7 +178,7 @@
   setBadge(50);
   slider.addEventListener('input', e=> setBadge(e.target.value));
 
-  /* ===== Vote ===== */
+  /* ===== Vote (no chart refresh here) ===== */
   const msg = document.getElementById('msg');
   const btn = document.getElementById('voteBtn');
 
@@ -177,7 +195,7 @@
     await voteOnce(val);
     msg.className='ok'; msg.textContent='Thanks for voting!';
     setTimeout(()=>{ msg.className='muted'; msg.textContent=''; btn.disabled=false; btn.classList.remove('disabled'); btn.textContent='Vote'; }, 1200);
-    refresh();
+    // no refresh here — chart updates at the next scheduled tick
   }
   btn.addEventListener('click', vote);
 
@@ -194,14 +212,14 @@
         const v = Math.floor(5 + Math.random()*90);
         voteOnce(v).catch(()=>{});
       }
-      if (Math.random() < 0.2) refresh();
+      // no immediate chart refresh; rely on scheduler
     }, 60);
   });
   document.getElementById('devStop')?.addEventListener('click', ()=>{
-    clearInterval(spamTimer); spamTimer = null; refresh();
+    clearInterval(spamTimer); spamTimer = null;
   });
 
-  // First draw
+  // First draw + schedule next
   refresh();
 </script>
 </body>
