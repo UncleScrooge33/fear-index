@@ -9,19 +9,21 @@ exports.handler = async (event) => {
 
     const url = new URL(event.rawUrl);
     const tf  = (url.searchParams.get('tf') || '1D').toUpperCase();
-    const includeSpam = url.searchParams.get('includeSpam') === '1'; // on ne l'utilisera plus côté front
+    const includeSpam = url.searchParams.get('includeSpam') === '1'; // ignoré côté front
 
+    // Buckets terminés uniquement ; point = moyenne glissante des 5 dernières moyennes de bucket
     const cfg = {
-      '1H':  { spanMs: 60*60*1000,        stepMs: 1*60*1000,     fmt: d=>d.toISOString().slice(11,16) },
-      '1D':  { spanMs: 24*60*60*1000,     stepMs: 30*60*1000,    fmt: d=>d.toISOString().slice(11,16) },
-      '7D':  { spanMs: 7*24*60*60*1000,   stepMs: 8*60*60*1000,  fmt: d=>d.toISOString().slice(5,10)  },
-      '90D': { spanMs: 90*24*60*60*1000,  stepMs: 3*24*60*60*1000, fmt: d=>d.toISOString().slice(0,10) },
-      '1Y':  { spanMs: 365*24*60*60*1000, stepMs: 14*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10) },
+      '1H':  { spanMs: 60*60*1000,         stepMs: 1*60*1000,      fmt: d=>d.toISOString().slice(11,16) }, // HH:MM
+      '1D':  { spanMs: 24*60*60*1000,      stepMs: 30*60*1000,     fmt: d=>d.toISOString().slice(11,16) },
+      '7D':  { spanMs: 7*24*60*60*1000,    stepMs: 8*60*60*1000,   fmt: d=>d.toISOString().slice(5,10)  }, // MM-DD
+      '1M':  { spanMs: 30*24*60*60*1000,   stepMs: 24*60*60*1000,  fmt: d=>d.toISOString().slice(0,10)  }, // YYYY-MM-DD (1 jour)
+      '90D': { spanMs: 90*24*60*60*1000,   stepMs: 3*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10)  },
+      '1Y':  { spanMs: 365*24*60*60*1000,  stepMs: 14*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10) },
     }[tf] || { spanMs: 24*60*60*1000, stepMs: 30*60*1000, fmt: d=>d.toISOString().slice(11,16) };
 
     const now = Date.now();
     const alignedNow = Math.floor(now / cfg.stepMs) * cfg.stepMs;
-    const endClosed  = alignedNow - cfg.stepMs;              // dernier bucket terminé (immutabilité)
+    const endClosed  = alignedNow - cfg.stepMs;              // dernier bucket terminé
     const start      = endClosed - cfg.spanMs + cfg.stepMs;  // bord gauche
 
     // 1) Form "vote" le plus récent
@@ -34,7 +36,7 @@ exports.handler = async (event) => {
       .sort((a,b)=> new Date(b.created_at) - new Date(a.created_at))[0];
     if (!form) return { statusCode: 404, body: 'Form "vote" not found' };
 
-    // 2) Submissions (verified + option spam)
+    // 2) Submissions
     const headers = { Authorization: `Bearer ${TOKEN}` };
     const baseUrl = `https://api.netlify.com/api/v1/forms/${form.id}/submissions?per_page=1000`;
     let subs = await fetch(baseUrl, { headers }).then(r=>r.json());
@@ -43,7 +45,7 @@ exports.handler = async (event) => {
       subs = subs.concat(spam);
     }
 
-    // 3) Filtre fenêtre + normalisation
+    // 3) Fenêtre + normalisation
     const rows = (Array.isArray(subs) ? subs : [])
       .map(s => {
         const t = Date.parse(s.created_at);
@@ -69,23 +71,20 @@ exports.handler = async (event) => {
     let lastMean = 50;
     for (const b of buckets) {
       let m;
-      if (b.vals.length > 0) {
-        m = b.vals.reduce((a,c)=>a+c,0) / b.vals.length;
-      } else {
-        m = lastMean;
-      }
+      if (b.vals.length > 0) m = b.vals.reduce((a,c)=>a+c,0) / b.vals.length;
+      else m = lastMean;
       m = Math.max(0, Math.min(100, m));
-      bucketMeans.push({ t: b.t, m, n: b.vals.length }); // <-- conserve n
+      bucketMeans.push({ t: b.t, m, n: b.vals.length });
       lastMean = m;
     }
 
-    // 5) Point tracé = moyenne glissante des 5 dernières moyennes de bucket
+    // 5) Point = moyenne glissante des 5 dernières moyennes de bucket
     const points = [];
     for (let i=0; i<bucketMeans.length; i++){
       const windowStart = Math.max(0, i-4);
       const slice = bucketMeans.slice(windowStart, i+1);
       const avg = slice.reduce((a,c)=>a+c.m, 0) / slice.length;
-      points.push({ t: cfg.fmt(new Date(bucketMeans[i].t)), v: +avg.toFixed(1), n: bucketMeans[i].n }); // <-- n inclus
+      points.push({ t: cfg.fmt(new Date(bucketMeans[i].t)), v: +avg.toFixed(1), n: bucketMeans[i].n });
     }
 
     const current = Math.round(points.at(-1)?.v ?? 50);
