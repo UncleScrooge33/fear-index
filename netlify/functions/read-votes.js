@@ -1,26 +1,21 @@
 ﻿// netlify/functions/read-votes.js
-// Env vars requises :
-// - NETLIFY_TOKEN : Personal Access Token (User settings → Applications → New token)
-// - (optionnel) MY_SITE_ID : API ID du site (fallback si SITE_ID non injecté)
+// Env vars requises : NETLIFY_TOKEN (+ optionnel MY_SITE_ID si SITE_ID non injecté)
 
 exports.handler = async (event) => {
   try {
     const TOKEN   = process.env.NETLIFY_TOKEN;
     const SITE_ID = process.env.SITE_ID || process.env.MY_SITE_ID;
-    if (!TOKEN || !SITE_ID) {
-      return { statusCode: 500, body: 'Missing NETLIFY_TOKEN or SITE_ID' };
-    }
+    if (!TOKEN || !SITE_ID) return { statusCode: 500, body: 'Missing NETLIFY_TOKEN or SITE_ID' };
 
     const url = new URL(event.rawUrl);
     const tf  = (url.searchParams.get('tf') || '1D').toUpperCase();
-    const includeSpam = url.searchParams.get('includeSpam') === '1';
+    const includeSpam = url.searchParams.get('includeSpam') === '1'; // on ne l'utilisera plus côté front
 
-    // Pas & fenêtre par timeframe (buckets terminés uniquement)
     const cfg = {
-      '1H':  { spanMs: 60*60*1000,        stepMs: 1*60*1000,     fmt: d=>d.toISOString().slice(11,16) }, // HH:MM
+      '1H':  { spanMs: 60*60*1000,        stepMs: 1*60*1000,     fmt: d=>d.toISOString().slice(11,16) },
       '1D':  { spanMs: 24*60*60*1000,     stepMs: 30*60*1000,    fmt: d=>d.toISOString().slice(11,16) },
-      '7D':  { spanMs: 7*24*60*60*1000,   stepMs: 8*60*60*1000,  fmt: d=>d.toISOString().slice(5,10)  }, // MM-DD
-      '90D': { spanMs: 90*24*60*60*1000,  stepMs: 3*24*60*60*1000, fmt: d=>d.toISOString().slice(0,10) }, // YYYY-MM-DD
+      '7D':  { spanMs: 7*24*60*60*1000,   stepMs: 8*60*60*1000,  fmt: d=>d.toISOString().slice(5,10)  },
+      '90D': { spanMs: 90*24*60*60*1000,  stepMs: 3*24*60*60*1000, fmt: d=>d.toISOString().slice(0,10) },
       '1Y':  { spanMs: 365*24*60*60*1000, stepMs: 14*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10) },
     }[tf] || { spanMs: 24*60*60*1000, stepMs: 30*60*1000, fmt: d=>d.toISOString().slice(11,16) };
 
@@ -29,7 +24,7 @@ exports.handler = async (event) => {
     const endClosed  = alignedNow - cfg.stepMs;              // dernier bucket terminé (immutabilité)
     const start      = endClosed - cfg.spanMs + cfg.stepMs;  // bord gauche
 
-    // 1) Récup form "vote" le plus récent
+    // 1) Form "vote" le plus récent
     const formsResp = await fetch(`https://api.netlify.com/api/v1/sites/${SITE_ID}/forms`, {
       headers: { Authorization: `Bearer ${TOKEN}` }
     });
@@ -39,7 +34,7 @@ exports.handler = async (event) => {
       .sort((a,b)=> new Date(b.created_at) - new Date(a.created_at))[0];
     if (!form) return { statusCode: 404, body: 'Form "vote" not found' };
 
-    // 2) Submissions (verified + spam si demandé)
+    // 2) Submissions (verified + option spam)
     const headers = { Authorization: `Bearer ${TOKEN}` };
     const baseUrl = `https://api.netlify.com/api/v1/forms/${form.id}/submissions?per_page=1000`;
     let subs = await fetch(baseUrl, { headers }).then(r=>r.json());
@@ -48,18 +43,18 @@ exports.handler = async (event) => {
       subs = subs.concat(spam);
     }
 
-    // 3) Filtre fenêtre [start, endClosed] + normalisation
+    // 3) Filtre fenêtre + normalisation
     const rows = (Array.isArray(subs) ? subs : [])
       .map(s => {
         const t = Date.parse(s.created_at);
-        const raw = s.data?.value ?? s.data?.choice; // compat
+        const raw = s.data?.value ?? s.data?.choice;
         const v = Number(raw);
         return { t, v };
       })
       .filter(r => !Number.isNaN(r.t) && !Number.isNaN(r.v) && r.t >= start && r.t <= endClosed)
       .sort((a,b)=>a.t-b.t);
 
-    // 4) Buckets fixes + moyenne simple par bucket (carry-forward si vide)
+    // 4) Buckets fixes
     const buckets = [];
     for (let t = start; t <= endClosed; t += cfg.stepMs) buckets.push({ t, vals: [] });
 
@@ -69,29 +64,28 @@ exports.handler = async (event) => {
       if (idx >= 0 && idx < buckets.length) buckets[idx].vals.push(r.v);
     }
 
-    // Moyenne simple de chaque bucket, avec propagation si vide
+    // Moyenne simple par bucket (carry-forward si vide)
     const bucketMeans = [];
     let lastMean = 50;
     for (const b of buckets) {
       let m;
       if (b.vals.length > 0) {
-        const sum = b.vals.reduce((a,c)=>a+c,0);
-        m = sum / b.vals.length;
+        m = b.vals.reduce((a,c)=>a+c,0) / b.vals.length;
       } else {
-        m = lastMean; // carry-forward si aucun vote dans le bucket
+        m = lastMean;
       }
       m = Math.max(0, Math.min(100, m));
-      bucketMeans.push({ t: b.t, m });
+      bucketMeans.push({ t: b.t, m, n: b.vals.length }); // <-- conserve n
       lastMean = m;
     }
 
     // 5) Point tracé = moyenne glissante des 5 dernières moyennes de bucket
     const points = [];
     for (let i=0; i<bucketMeans.length; i++){
-      const windowStart = Math.max(0, i-4); // inclut i et 4 précédents
+      const windowStart = Math.max(0, i-4);
       const slice = bucketMeans.slice(windowStart, i+1);
       const avg = slice.reduce((a,c)=>a+c.m, 0) / slice.length;
-      points.push({ t: cfg.fmt(new Date(bucketMeans[i].t)), v: +avg.toFixed(1) });
+      points.push({ t: cfg.fmt(new Date(bucketMeans[i].t)), v: +avg.toFixed(1), n: bucketMeans[i].n }); // <-- n inclus
     }
 
     const current = Math.round(points.at(-1)?.v ?? 50);

@@ -7,28 +7,20 @@
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
-  :root{
-    --bg:#0f1220; --panel:#161a2b; --text:#e8ecf1; --muted:#9aa3b2; --accent:#7dd3fc;
-  }
+  :root{ --bg:#0f1220; --panel:#161a2b; --text:#e8ecf1; --muted:#9aa3b2; }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
   .wrap{max-width:1100px;margin:28px auto 40px;padding:0 16px}
-
-  /* ===== HERO ===== */
   .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:8px;margin-bottom:20px}
   .title{font-size:40px;line-height:1.15;margin:0;font-weight:700;letter-spacing:.2px}
   .avg{font-size:28px;font-weight:700;letter-spacing:.3px}
   .desc{color:var(--muted);font-size:15px;margin-top:4px}
   .spacer{height:10px}
 
-  /* ===== CARDS / LAYOUT ===== */
   .card{background:var(--panel);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px}
   .chartRow{display:grid;grid-template-columns:120px 1fr;gap:12px}
   .scale{display:flex;flex-direction:column;gap:8px}
-  .scale button{
-    background:transparent;border:1px solid rgba(255,255,255,.1);color:var(--text);
-    padding:10px 12px;border-radius:10px;cursor:pointer;text-align:left
-  }
+  .scale button{background:transparent;border:1px solid rgba(255,255,255,.1);color:var(--text);padding:10px 12px;border-radius:10px;cursor:pointer;text-align:left}
   .scale button.active{border-color:#7dd3fc;box-shadow:0 0 0 1px rgba(125,211,252,.25) inset}
   canvas{width:100%;height:380px}
 
@@ -38,9 +30,7 @@
   .voteRow{display:flex;gap:12px;margin-top:12px;align-items:center;flex-wrap:wrap}
   .voteBtn{background:linear-gradient(90deg,#39486a,#3c6b7b);border:0;color:#fff;padding:12px 16px;border-radius:12px;cursor:pointer;transition:.2s opacity}
   .voteBtn.disabled{opacity:.5;cursor:not-allowed;filter:grayscale(30%)}
-  .muted{color:#9aa3b2}.ok{color:#22c55e}
-  .dev{margin-left:auto;display:none}
-  .dev button{margin-left:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#e8ecf1;padding:8px 10px;border-radius:10px;cursor:pointer}
+  .muted{color:#9aa3b2}.ok{color:#22c55e}.err{color:#f97316}
 
   @media (max-width:820px){
     .chartRow{grid-template-columns:1fr}
@@ -50,7 +40,6 @@
     .avg{font-size:24px}
   }
 
-  /* Slider */
   input[type="range"]{-webkit-appearance:none;appearance:none;width:100%;height:12px;background:linear-gradient(90deg,#ef4444 0%, #eab308 50%, #166534 100%);border-radius:999px;outline:none}
   input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid #0f1220;box-shadow:0 0 0 3px rgba(255,255,255,.2)}
   input[type="range"]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid #0f1220}
@@ -59,15 +48,13 @@
 <body>
 <div class="wrap">
 
-  <!-- ===== HERO ===== -->
   <div class="hero">
     <h1 class="title">Humanity Fear Index</h1>
-    <div id="avg" class="avg">33 / 100</div>
+    <div id="avg" class="avg">-- / 100</div>
     <div class="desc">Average of community votes over the selected period.</div>
   </div>
   <div class="spacer"></div>
 
-  <!-- ===== CHART ===== -->
   <div class="card chartRow">
     <div class="scale">
       <button data-tf="1H" class="active">1H</button>
@@ -79,14 +66,12 @@
     <div><canvas id="chart"></canvas></div>
   </div>
 
-  <!-- ===== SLIDER / VOTE ===== -->
   <div class="card sliderCard">
     <div class="sliderBox">
       <input id="slider" type="range" min="0" max="100" value="50" step="1" />
       <div class="valueBadge"><span id="sVal">50</span>/100</div>
     </div>
     <div class="voteRow">
-      <!-- Hidden Netlify Form -->
       <form name="vote" method="POST" data-netlify="true" netlify-honeypot="bot-field" hidden>
         <input type="hidden" name="form-name" value="vote"/>
         <input type="text" name="value" id="voteValue"/>
@@ -94,53 +79,60 @@
       </form>
       <button class="voteBtn" id="voteBtn">Vote</button>
       <span id="msg" class="muted"></span>
-
-      <!-- Dev tools (show with ?dev=1) -->
-      <div class="dev" id="devBox">
-        <span class="muted">DEV:</span>
-        <button id="devStart">Start random spam</button>
-        <button id="devStop">Stop</button>
-      </div>
     </div>
   </div>
 </div>
 
 <script>
-  /* ===== Color mapping (0→red, 50→yellow, 100→dark green) ===== */
+  /* ===== Utils couleurs ===== */
   function lerp(a,b,t){ return a + (b-a)*t; }
   function hexToRgb(h){ const m=/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(h); return m?{r:parseInt(m[1],16),g:parseInt(m[2],16),b:parseInt(m[3],16)}:null; }
   function rgbToHex({r,g,b}){ const h=x=>x.toString(16).padStart(2,'0'); return `#${h(r)}${h(g)}${h(b)}`; }
   function blend(c1,c2,t){ const a=hexToRgb(c1), b=hexToRgb(c2); return rgbToHex({r:Math.round(lerp(a.r,b.r,t)), g:Math.round(lerp(a.g,b.g,t)), b:Math.round(lerp(a.b,b.b,t))}); }
   function valToColor(v){
     v = Math.max(0, Math.min(100, v));
-    if (v<=50){ return blend('#ef4444','#eab308', v/50); }        // red → yellow
-    return blend('#eab308','#166534', (v-50)/50);                 // yellow → dark green
+    if (v<=50){ return blend('#ef4444','#eab308', v/50); }
+    return blend('#eab308','#166534', (v-50)/50);
   }
 
-  /* ===== Chart config ===== */
+  /* ===== Chart ===== */
   const ctx = document.getElementById('chart');
   const chart = new Chart(ctx, {
     type: 'line',
     data: { labels: [], datasets: [{
       label: 'Fear Index',
-      data: [],
+      data: [],                     // ← valeurs
+      _counts: [],                  // ← stocke n pour tooltip
       borderWidth: 3,
       pointRadius: 0,
       tension: .35,
-      // Couleur par SEGMENT selon la valeur (dégradé le long de la courbe)
       segment: {
         borderColor: ctx => {
           const y0 = ctx.p0?.parsed?.y, y1 = ctx.p1?.parsed?.y;
-          const mid = ( (y0??50) + (y1??50) ) / 2;
+          const mid = ((y0??50)+(y1??50))/2;
           return valToColor(mid);
         }
       },
-      borderColor: '#888', // fallback
-      fill: false          // pas de zone bleue en dessous
+      borderColor: '#888',
+      fill: false
     }]},
     options: {
       responsive:true,
-      plugins:{ legend:{display:false}, tooltip:{mode:'index', intersect:false} },
+      plugins:{
+        legend:{display:false},
+        tooltip:{
+          mode:'index', intersect:false,
+          callbacks:{
+            // Affiche: "Value: 72.3  |  Votes: 18"
+            label: (tt) => {
+              const v = tt.parsed.y?.toFixed(1) ?? '--';
+              const ds = tt.chart.data.datasets[tt.datasetIndex];
+              const n = ds?._counts?.[tt.dataIndex] ?? 0;
+              return `Value: ${v}  |  Votes: ${n}`;
+            }
+          }
+        }
+      },
       interaction:{ mode:'index', intersect:false },
       scales:{
         y:{ min:0, max:100, grid:{color:'rgba(255,255,255,.06)'} },
@@ -155,21 +147,23 @@
     }
   });
 
-  /* ===== Timeframe & ticks ===== */
+  /* ===== Timeframe par défaut = 1H (bug fix) ===== */
   const tfButtons = Array.from(document.querySelectorAll('.scale button'));
-  let timeframe = '1D';
-  window.__tickStep = 12;
+  let timeframe = '1H';
+  tfButtons.forEach(b=>b.classList.remove('active'));
+  document.querySelector('.scale button[data-tf="1H"]').classList.add('active');
 
   function pickTickStep(tf){
-    if (tf==='1H')  return 5;  // label every 5 min
-    if (tf==='1D')  return 4;  // label every 2 h (30 min buckets)
-    if (tf==='7D')  return 3;  // label every 24 h (8 h buckets)
-    if (tf==='90D') return 3;  // ~every 7 days (3 d buckets)
-    if (tf==='1Y')  return 2;  // ~every 4 weeks (2 w buckets)
+    if (tf==='1H')  return 5;
+    if (tf==='1D')  return 4;
+    if (tf==='7D')  return 3;
+    if (tf==='90D') return 3;
+    if (tf==='1Y')  return 2;
     return 4;
   }
+  window.__tickStep = pickTickStep(timeframe);
 
-  /* ===== Scheduler: refresh only at bucket boundaries ===== */
+  /* ===== Scheduler bucket-boundary ===== */
   let nextTimer = null;
   function scheduleNext(meta){
     if (nextTimer) clearTimeout(nextTimer);
@@ -187,26 +181,24 @@
     refresh();
   }));
 
-  /* ===== Data fetching ===== */
+  /* ===== Fetch & bind ===== */
   async function refresh(){
-    const params = new URLSearchParams(location.search);
-    const devMode = params.get('dev') === '1';
-    const url = '/.netlify/functions/read-votes?tf=' + timeframe + (devMode ? '&includeSpam=1' : '');
+    const url = '/.netlify/functions/read-votes?tf=' + timeframe;
     const r = await fetch(url, { cache:'no-store' });
     const j = await r.json();
 
     window.__tickStep = pickTickStep(timeframe);
     chart.data.labels = j.points.map(p=>p.t);
     chart.data.datasets[0].data = j.points.map(p=>p.v);
+    chart.data.datasets[0]._counts = j.points.map(p=>p.n); // ← injecte n pour tooltip
     chart.update();
 
-    // Header: moyenne colorée
+    // header moyenne colorée
     const current = (j.current ?? 50);
     const avgEl = document.getElementById('avg');
     avgEl.textContent = `${current} / 100`;
     avgEl.style.color = valToColor(current);
 
-    // programme la prochaine MAJ pile à la fin du prochain bucket
     scheduleNext(j.meta);
   }
 
@@ -223,9 +215,34 @@
   setBadge(50);
   slider.addEventListener('input', e=> setBadge(e.target.value));
 
-  /* ===== Vote (no chart refresh here) ===== */
+  /* ===== Vote avec COOLDOWN 12h ===== */
+  const COOLDOWN_MIN = 12 * 60; // 12h
   const msg = document.getElementById('msg');
   const btn = document.getElementById('voteBtn');
+
+  function remainMs(){
+    const last = Number(localStorage.getItem('lastVoteTs')||0);
+    const left = Math.max(0, (last + COOLDOWN_MIN*60*1000) - Date.now());
+    return left;
+  }
+  function fmtLeft(ms){
+    const m = Math.ceil(ms/60000);
+    if (m >= 60) { const h = Math.floor(m/60), mm = m%60; return `${h}h ${mm}m`; }
+    return `${m} min`;
+    }
+  function updateCooldownUI(){
+    const left = remainMs();
+    if (left > 0){
+      btn.disabled = true; btn.classList.add('disabled');
+      btn.textContent = 'Vote';
+      msg.className='muted'; msg.textContent = `Next vote in ${fmtLeft(left)}`;
+    }else{
+      btn.disabled = false; btn.classList.remove('disabled');
+      msg.className='muted'; msg.textContent = '';
+    }
+  }
+  setInterval(updateCooldownUI, 1000);
+  updateCooldownUI();
 
   async function voteOnce(value){
     const data = new FormData();
@@ -235,32 +252,16 @@
   }
 
   async function vote(){
+    if (remainMs() > 0) return; // sécurité
     btn.disabled = true; btn.classList.add('disabled'); btn.textContent = 'Voted ✓';
     const val = Number(slider.value);
     await voteOnce(val);
+    localStorage.setItem('lastVoteTs', Date.now().toString());
     msg.className='ok'; msg.textContent='Thanks for voting!';
-    setTimeout(()=>{ msg.className='muted'; msg.textContent=''; btn.disabled=false; btn.classList.remove('disabled'); btn.textContent='Vote'; }, 1200);
-    // Pas de refresh : la courbe bougera au prochain tick programmé
+    setTimeout(()=>{ msg.className='muted'; msg.textContent=''; updateCooldownUI(); }, 1500);
+    // pas de refresh immédiat : MAJ au prochain tick planifié
   }
   btn.addEventListener('click', vote);
-
-  /* ===== Dev spam (15–20 votes/sec) ===== */
-  const devBox = document.getElementById('devBox');
-  let spamTimer = null;
-  if (new URLSearchParams(location.search).get('dev') === '1') devBox.style.display = 'flex';
-
-  document.getElementById('devStart')?.addEventListener('click', ()=>{
-    if (spamTimer) return;
-    spamTimer = setInterval(async ()=>{
-      for (let i=0;i<Math.floor(1 + Math.random()*3);i++){
-        const v = Math.floor(5 + Math.random()*90);
-        voteOnce(v).catch(()=>{});
-      }
-    }, 60);
-  });
-  document.getElementById('devStop')?.addEventListener('click', ()=>{
-    clearInterval(spamTimer); spamTimer = null;
-  });
 
   // First draw + schedule
   refresh();
