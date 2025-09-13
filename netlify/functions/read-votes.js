@@ -10,7 +10,7 @@ exports.handler = async (event) => {
     const url = new URL(event.rawUrl);
     const tf  = (url.searchParams.get('tf') || '1D').toUpperCase();
 
-    // Buckets terminés ; si aucun vote → mean=50 ; point = moyenne glissante des 5 dernières mean(buckets)
+    // Fenêtres & pas (buckets terminés uniquement)
     const cfg = {
       '1H':  { spanMs: 60*60*1000,         stepMs: 1*60*1000,      fmt: d=>d.toISOString().slice(11,16) }, // HH:MM
       '1D':  { spanMs: 24*60*60*1000,      stepMs: 30*60*1000,     fmt: d=>d.toISOString().slice(11,16) },
@@ -23,8 +23,8 @@ exports.handler = async (event) => {
     const now = Date.now();
     const alignedNow = Math.floor(now / cfg.stepMs) * cfg.stepMs;
     const endClosed  = alignedNow - cfg.stepMs;              // dernier bucket terminé
-    const start      = endClosed - cfg.spanMs + cfg.stepMs;  // bord gauche (visible)
-    const bufferCnt  = 4;                                    // ⟵ Important : buffer avant fenêtre
+    const start      = endClosed - cfg.spanMs + cfg.stepMs;  // début de la fenêtre visible
+    const bufferCnt  = 4;                                    // buffer pour lisser sans ré-écrire l'historique
     const startWithBuffer = start - bufferCnt * cfg.stepMs;
 
     // 1) Form "vote" le plus récent
@@ -37,23 +37,22 @@ exports.handler = async (event) => {
       .sort((a,b)=> new Date(b.created_at) - new Date(a.created_at))[0];
     if (!form) return { statusCode: 404, body: 'Form "vote" not found' };
 
-    // 2) Submissions
+    // 2) Submissions (verified)
     const headers = { Authorization: `Bearer ${TOKEN}` };
     const baseUrl = `https://api.netlify.com/api/v1/forms/${form.id}/submissions?per_page=1000`;
     let subs = await fetch(baseUrl, { headers }).then(r=>r.json());
 
-    // 3) Fenêtre [startWithBuffer, endClosed] + normalisation
+    // 3) Filtre fenêtre [startWithBuffer, endClosed] + normalisation
     const rows = (Array.isArray(subs) ? subs : [])
       .map(s => {
         const t = Date.parse(s.created_at);
-        const raw = s.data?.value ?? s.data?.choice;
-        const v = Number(raw);
+        const v = Number(s.data?.value ?? s.data?.choice);
         return { t, v };
       })
       .filter(r => !Number.isNaN(r.t) && !Number.isNaN(r.v) && r.t >= startWithBuffer && r.t <= endClosed)
       .sort((a,b)=>a.t-b.t);
 
-    // 4) Buckets fixes depuis le buffer
+    // 4) Buckets fixes (no vote => mean = 50)
     const buckets = [];
     for (let t = startWithBuffer; t <= endClosed; t += cfg.stepMs) buckets.push({ t, vals: [] });
 
@@ -63,22 +62,31 @@ exports.handler = async (event) => {
       if (idx >= 0 && idx < buckets.length) buckets[idx].vals.push(r.v);
     }
 
-    // mean par bucket (no vote => 50)
     const means = buckets.map(b => {
       const n = b.vals.length;
-      const m = n ? (b.vals.reduce((a,c)=>a+c,0) / n) : 50;
-      return { t:b.t, mean: Math.max(0, Math.min(100, m)), n };
+      const m = n ? (b.vals.reduce((a,c)=>a+c,0) / n) : 50;    // ← no vote = 50
+      return { t: b.t, mean: Math.max(0, Math.min(100, m)), n };
     });
 
-    // 5) Lissage "5-last" indépendant de la fenêtre visible : utilise le buffer
-    const smoothed = means.map((_, i) => {
-      const from = Math.max(0, i-4), to = i; // inclus
-      const slice = means.slice(from, to+1);
-      const avg = slice.reduce((a,c)=>a+c.mean, 0) / slice.length;
-      return { t: means[i].t, v: +avg.toFixed(1), n: means[i].n };
-    });
+    // 5) Nouveau lissage "hybride" :
+    // y[i] = avg( raw[i], y[i-1], raw[i-2], raw[i-3], raw[i-4] ) (uniquement ceux existants)
+    const smoothed = [];
+    for (let i = 0; i < means.length; i++) {
+      const vals = [];
+      // courant (raw)
+      vals.push(means[i].mean);
+      // y[i-1] si dispo
+      if (i-1 >= 0) vals.push(smoothed[i-1].v);
+      // raw i-2, i-3, i-4 si dispo
+      if (i-2 >= 0) vals.push(means[i-2].mean);
+      if (i-3 >= 0) vals.push(means[i-3].mean);
+      if (i-4 >= 0) vals.push(means[i-4].mean);
 
-    // 6) On ne renvoie que la partie visible (t >= start)
+      const avg = vals.reduce((a,c)=>a+c,0) / vals.length;
+      smoothed.push({ t: means[i].t, v: +avg.toFixed(1), n: means[i].n });
+    }
+
+    // 6) Ne renvoyer que la partie visible (t >= start)
     const visible = smoothed.filter(p => p.t >= start);
     const current = Math.round(visible.at(-1)?.v ?? 50);
 

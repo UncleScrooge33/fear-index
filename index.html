@@ -12,10 +12,10 @@
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
   .wrap{max-width:1100px;margin:28px auto 40px;padding:0 16px}
 
-  .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:8px;margin-bottom:20px}
+  .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:6px;margin-bottom:20px}
   .title{font-size:40px;line-height:1.15;margin:0;font-weight:700;letter-spacing:.2px}
   .avg{font-size:28px;font-weight:700;letter-spacing:.3px}
-  .desc{color:var(--muted);font-size:15px;margin-top:4px}
+  .desc{color:var(--muted);font-size:15px;margin-top:2px}
   .timer{color:var(--muted);font-size:13px;margin-top:2px}
   .spacer{height:10px}
 
@@ -32,7 +32,7 @@
   .voteRow{display:flex;gap:12px;margin-top:12px;align-items:center;flex-wrap:wrap}
   .voteBtn{background:linear-gradient(90deg,#39486a,#3c6b7b);border:0;color:#fff;padding:12px 16px;border-radius:12px;cursor:pointer;transition:.2s opacity}
   .voteBtn.disabled{opacity:.5;cursor:not-allowed;filter:grayscale(30%)}
-  .muted{color:#9aa3b2}.ok{color:#22c55e}.err{color:#f97316}
+  .muted{color:#9aa3b2}.ok{color:#22c55e}
 
   .infoCard{margin-top:16px}
   .infoTitle{margin:0 0 10px;font-size:18px;font-weight:700}
@@ -90,13 +90,13 @@
     </div>
   </div>
 
-  <!-- Bloc d’explication en bas -->
+  <!-- ===== Info block (bottom) ===== -->
   <div class="card infoCard">
     <h3 class="infoTitle">What this index shows</h3>
     <p class="infoText">
       The index aggregates community votes into fixed time buckets (1H: 1 min · 1D: 30 min · 7D: 8 h · 1M: 1 day · 90D: 3 days · 1Y: 2 weeks).
       Each bucket’s mean is 50 if no votes occur (so the curve drifts back to neutral when activity stops).
-      Every plotted point is a moving average of the last 5 bucket means, computed once when each bucket closes—previous points never change.
+      Every plotted point is a moving average of the last 5 bucket means, computed once when each bucket closes — previous points never change.
       Hover a point to see its exact value and how many votes it includes. You can vote once every 12 hours using the slider above.
     </p>
   </div>
@@ -182,11 +182,12 @@
 
   /* ===== Scheduler & Next-update timer ===== */
   let nextTimer = null, countdownInterval = null, nextAtTs = 0;
+
   function fmtLeft(ms){
     if (ms < 0) ms = 0;
     const s = Math.floor(ms / 1000);
     const m = Math.floor(s / 60), ss = String(s % 60).padStart(2,'0');
-    return m ? `${m}:${ss}` : `0:${ss}`;
+    return `${m}:${ss}`;
   }
   function renderCountdown(){
     if (!nextAtTs) return;
@@ -196,10 +197,24 @@
   function scheduleNext(meta){
     if (nextTimer) clearTimeout(nextTimer);
     if (countdownInterval) clearInterval(countdownInterval);
-    nextAtTs = (meta?.end ?? Date.now()) + (meta?.stepMs ?? 60000);
+
+    const step = meta?.stepMs ?? 60000;
+    // meta.end = dernier bucket TERMINÉ (= alignedNow - step)
+    // prochaine fermeture = alignedNow + step = meta.end + 2*step
+    let nextAt = (meta?.end ?? Date.now()) + 2 * step;
+
+    // si c'est déjà passé (latence), saute par pas jusqu'au futur
+    const now = Date.now();
+    if (nextAt <= now) {
+      const missed = Math.floor((now - nextAt) / step) + 1;
+      nextAt += missed * step;
+    }
+
+    nextAtTs = nextAt;
     renderCountdown();
     countdownInterval = setInterval(renderCountdown, 1000);
-    const delay = Math.max(250, nextAtTs - Date.now());
+
+    const delay = Math.max(250, nextAt - now);
     nextTimer = setTimeout(() => refresh(), delay);
   }
 
@@ -228,15 +243,7 @@
     const current = (j.current ?? 50);
     const avgEl = document.getElementById('avg');
     avgEl.textContent = `${current} / 100`;
-    avgEl.style.color = (function(v){
-      if (v<=50){ // red->yellow
-        const t = v/50;
-        return (function(c1,c2,t){ const a=hexToRgb(c1), b=hexToRgb(c2); return `#${[0,0,0].map((_,i)=>Math.round([a.r,a.g,a.b][i]*(1-t)+[b.r,b.g,b.b][i]*t).toString(16).padStart(2,'0')).join('')}`; })('#ef4444','#eab308', t);
-      } else {
-        const t = (v-50)/50;
-        return (function(c1,c2,t){ const a=hexToRgb(c1), b=hexToRgb(c2); return `#${[0,0,0].map((_,i)=>Math.round([a.r,a.g,a.b][i]*(1-t)+[b.r,b.g,b.b][i]*t).toString(16).padStart(2,'0')).join('')}`; })('#eab308','#166534', t);
-      }
-    })(current);
+    avgEl.style.color = valToColor(current);
 
     scheduleNext(j.meta);
   }
@@ -262,14 +269,16 @@
     const last = Number(localStorage.getItem('lastVoteTs')||0);
     return Math.max(0, (last + COOLDOWN_MIN*60*1000) - Date.now());
   }
+  function fmtLeft(ms){
+    const m = Math.ceil(ms/60000);
+    if (m >= 60) { const h = Math.floor(m/60), mm = m%60; return `${h}h ${mm}m`; }
+    return `${m} min`;
+  }
   function updateCooldownUI(){
     const left = remainMs();
     if (left > 0){
       btn.disabled = true; btn.classList.add('disabled');
-      msg.className='muted';
-      const m = Math.ceil(left/60000);
-      if (m >= 60) { const h = Math.floor(m/60), mm = m%60; msg.textContent = `Next vote in ${h}h ${mm}m`; }
-      else msg.textContent = `Next vote in ${m} min`;
+      msg.className='muted'; msg.textContent = `Next vote in ${fmtLeft(left)}`;
     }else{
       btn.disabled = false; btn.classList.remove('disabled');
       msg.className='muted'; msg.textContent = '';
@@ -290,17 +299,14 @@
     const val = Number(slider.value);
     await voteOnce(val);
     localStorage.setItem('lastVoteTs', Date.now().toString());
-    msg.className='ok'; msg.textContent='Thanks for voting!';
+    msg.className='ok'; msg.textContent = 'Thanks for voting!';
     setTimeout(()=>{ msg.className='muted'; msg.textContent=''; updateCooldownUI(); }, 1500);
-    // Pas de refresh immédiat : la courbe bougera au prochain tick programmé
+    // pas de refresh ici : la courbe bouge au prochain tick planifié
   }
   btn.addEventListener('click', vote);
 
   // First draw
   refresh();
-
-  // helpers used above
-  function hexToRgb(h){ const m=/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(h); return m?{r:parseInt(m[1],16),g:parseInt(m[2],16),b:parseInt(m[3],16)}:null; }
 </script>
 </body>
 </html>
