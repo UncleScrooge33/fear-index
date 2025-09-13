@@ -183,7 +183,7 @@
   /* ===== Scheduler & Next-update timer ===== */
   let nextTimer = null, countdownInterval = null, nextAtTs = 0;
 
-  function fmtLeft(ms){
+  function fmtTimer(ms){
     if (ms < 0) ms = 0;
     const s = Math.floor(ms / 1000);
     const m = Math.floor(s / 60), ss = String(s % 60).padStart(2,'0');
@@ -192,7 +192,7 @@
   function renderCountdown(){
     if (!nextAtTs) return;
     const left = nextAtTs - Date.now();
-    document.getElementById('nextTimer').textContent = `Next update in ${fmtLeft(left)}`;
+    document.getElementById('nextTimer').textContent = `Next update in ${fmtTimer(left)}`;
   }
   function scheduleNext(meta){
     if (nextTimer) clearTimeout(nextTimer);
@@ -269,7 +269,7 @@
     const last = Number(localStorage.getItem('lastVoteTs')||0);
     return Math.max(0, (last + COOLDOWN_MIN*60*1000) - Date.now());
   }
-  function fmtLeft(ms){
+  function fmtCooldown(ms){
     const m = Math.ceil(ms/60000);
     if (m >= 60) { const h = Math.floor(m/60), mm = m%60; return `${h}h ${mm}m`; }
     return `${m} min`;
@@ -278,7 +278,7 @@
     const left = remainMs();
     if (left > 0){
       btn.disabled = true; btn.classList.add('disabled');
-      msg.className='muted'; msg.textContent = `Next vote in ${fmtLeft(left)}`;
+      msg.className='muted'; msg.textContent = `Next vote in ${fmtCooldown(left)}`;
     }else{
       btn.disabled = false; btn.classList.remove('disabled');
       msg.className='muted'; msg.textContent = '';

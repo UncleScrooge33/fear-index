@@ -10,21 +10,23 @@ exports.handler = async (event) => {
     const url = new URL(event.rawUrl);
     const tf  = (url.searchParams.get('tf') || '1D').toUpperCase();
 
-    // Fenêtres & pas (buckets terminés uniquement)
+    // Périodes (buckets terminés uniquement) + alpha EMA par échelle
     const cfg = {
-      '1H':  { spanMs: 60*60*1000,         stepMs: 1*60*1000,      fmt: d=>d.toISOString().slice(11,16) }, // HH:MM
-      '1D':  { spanMs: 24*60*60*1000,      stepMs: 30*60*1000,     fmt: d=>d.toISOString().slice(11,16) },
-      '7D':  { spanMs: 7*24*60*60*1000,    stepMs: 8*60*60*1000,   fmt: d=>d.toISOString().slice(5,10)  }, // MM-DD
-      '1M':  { spanMs: 30*24*60*60*1000,   stepMs: 24*60*60*1000,  fmt: d=>d.toISOString().slice(0,10)  }, // YYYY-MM-DD
-      '90D': { spanMs: 90*24*60*60*1000,   stepMs: 3*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10)  },
-      '1Y':  { spanMs: 365*24*60*60*1000,  stepMs: 14*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10) },
-    }[tf] || { spanMs: 24*60*60*1000, stepMs: 30*60*1000, fmt: d=>d.toISOString().slice(11,16) };
+      '1H':  { spanMs: 60*60*1000,         stepMs: 1*60*1000,      fmt: d=>d.toISOString().slice(11,16), alpha: 0.35 },
+      '1D':  { spanMs: 24*60*60*1000,      stepMs: 30*60*1000,     fmt: d=>d.toISOString().slice(11,16), alpha: 0.30 },
+      '7D':  { spanMs: 7*24*60*60*1000,    stepMs: 8*60*60*1000,   fmt: d=>d.toISOString().slice(5,10),  alpha: 0.28 },
+      '1M':  { spanMs: 30*24*60*60*1000,   stepMs: 24*60*60*1000,  fmt: d=>d.toISOString().slice(0,10),  alpha: 0.25 },
+      '90D': { spanMs: 90*24*60*60*1000,   stepMs: 3*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10),  alpha: 0.22 },
+      '1Y':  { spanMs: 365*24*60*60*1000,  stepMs: 14*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10), alpha: 0.20 },
+    }[tf] || { spanMs: 24*60*60*1000, stepMs: 30*60*1000, fmt: d=>d.toISOString().slice(11,16), alpha: 0.30 };
 
     const now = Date.now();
     const alignedNow = Math.floor(now / cfg.stepMs) * cfg.stepMs;
     const endClosed  = alignedNow - cfg.stepMs;              // dernier bucket terminé
-    const start      = endClosed - cfg.spanMs + cfg.stepMs;  // début de la fenêtre visible
-    const bufferCnt  = 4;                                    // buffer pour lisser sans ré-écrire l'historique
+    const start      = endClosed - cfg.spanMs + cfg.stepMs;  // début de fenêtre visible
+
+    // Buffer (pré-chauffe EMA pour éviter l'effet de bord)
+    const bufferCnt  = 4;
     const startWithBuffer = start - bufferCnt * cfg.stepMs;
 
     // 1) Form "vote" le plus récent
@@ -52,7 +54,7 @@ exports.handler = async (event) => {
       .filter(r => !Number.isNaN(r.t) && !Number.isNaN(r.v) && r.t >= startWithBuffer && r.t <= endClosed)
       .sort((a,b)=>a.t-b.t);
 
-    // 4) Buckets fixes (no vote => mean = 50)
+    // 4) Buckets fixes (no vote => rawMean = 50)
     const buckets = [];
     for (let t = startWithBuffer; t <= endClosed; t += cfg.stepMs) buckets.push({ t, vals: [] });
 
@@ -62,32 +64,25 @@ exports.handler = async (event) => {
       if (idx >= 0 && idx < buckets.length) buckets[idx].vals.push(r.v);
     }
 
-    const means = buckets.map(b => {
+    const raw = buckets.map(b => {
       const n = b.vals.length;
-      const m = n ? (b.vals.reduce((a,c)=>a+c,0) / n) : 50;    // ← no vote = 50
+      const m = n ? (b.vals.reduce((a,c)=>a+c,0) / n) : 50;         // ← no vote = 50
       return { t: b.t, mean: Math.max(0, Math.min(100, m)), n };
     });
 
-    // 5) Nouveau lissage "hybride" :
-    // y[i] = avg( raw[i], y[i-1], raw[i-2], raw[i-3], raw[i-4] ) (uniquement ceux existants)
-    const smoothed = [];
-    for (let i = 0; i < means.length; i++) {
-      const vals = [];
-      // courant (raw)
-      vals.push(means[i].mean);
-      // y[i-1] si dispo
-      if (i-1 >= 0) vals.push(smoothed[i-1].v);
-      // raw i-2, i-3, i-4 si dispo
-      if (i-2 >= 0) vals.push(means[i-2].mean);
-      if (i-3 >= 0) vals.push(means[i-3].mean);
-      if (i-4 >= 0) vals.push(means[i-4].mean);
-
-      const avg = vals.reduce((a,c)=>a+c,0) / vals.length;
-      smoothed.push({ t: means[i].t, v: +avg.toFixed(1), n: means[i].n });
+    // 5) EMA : y[i] = α*raw[i] + (1-α)*y[i-1]
+    const a = cfg.alpha;
+    const ema = [];
+    let prev = raw.length ? raw[0].mean : 50; // init EMA
+    ema.push({ t: raw[0]?.t ?? startWithBuffer, v: +prev.toFixed(1), n: raw[0]?.n ?? 0 });
+    for (let i=1; i<raw.length; i++){
+      const y = a*raw[i].mean + (1-a)*prev;
+      prev = y;
+      ema.push({ t: raw[i].t, v: +y.toFixed(1), n: raw[i].n });
     }
 
     // 6) Ne renvoyer que la partie visible (t >= start)
-    const visible = smoothed.filter(p => p.t >= start);
+    const visible = ema.filter(p => p.t >= start);
     const current = Math.round(visible.at(-1)?.v ?? 50);
 
     return {
