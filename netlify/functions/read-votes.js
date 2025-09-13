@@ -9,9 +9,8 @@ exports.handler = async (event) => {
 
     const url = new URL(event.rawUrl);
     const tf  = (url.searchParams.get('tf') || '1D').toUpperCase();
-    const includeSpam = url.searchParams.get('includeSpam') === '1'; // non utilisé côté front
 
-    // Buckets terminés ; point = moyenne glissante des 5 dernières moyennes de bucket
+    // Buckets terminés ; si aucun vote → mean=50 ; point = moyenne glissante des 5 dernières mean(buckets)
     const cfg = {
       '1H':  { spanMs: 60*60*1000,         stepMs: 1*60*1000,      fmt: d=>d.toISOString().slice(11,16) }, // HH:MM
       '1D':  { spanMs: 24*60*60*1000,      stepMs: 30*60*1000,     fmt: d=>d.toISOString().slice(11,16) },
@@ -24,7 +23,9 @@ exports.handler = async (event) => {
     const now = Date.now();
     const alignedNow = Math.floor(now / cfg.stepMs) * cfg.stepMs;
     const endClosed  = alignedNow - cfg.stepMs;              // dernier bucket terminé
-    const start      = endClosed - cfg.spanMs + cfg.stepMs;  // bord gauche
+    const start      = endClosed - cfg.spanMs + cfg.stepMs;  // bord gauche (visible)
+    const bufferCnt  = 4;                                    // ⟵ Important : buffer avant fenêtre
+    const startWithBuffer = start - bufferCnt * cfg.stepMs;
 
     // 1) Form "vote" le plus récent
     const formsResp = await fetch(`https://api.netlify.com/api/v1/sites/${SITE_ID}/forms`, {
@@ -40,12 +41,8 @@ exports.handler = async (event) => {
     const headers = { Authorization: `Bearer ${TOKEN}` };
     const baseUrl = `https://api.netlify.com/api/v1/forms/${form.id}/submissions?per_page=1000`;
     let subs = await fetch(baseUrl, { headers }).then(r=>r.json());
-    if (includeSpam) {
-      const spam = await fetch(baseUrl + '&state=spam', { headers }).then(r=>r.json());
-      subs = subs.concat(spam);
-    }
 
-    // 3) Fenêtre + normalisation
+    // 3) Fenêtre [startWithBuffer, endClosed] + normalisation
     const rows = (Array.isArray(subs) ? subs : [])
       .map(s => {
         const t = Date.parse(s.created_at);
@@ -53,45 +50,44 @@ exports.handler = async (event) => {
         const v = Number(raw);
         return { t, v };
       })
-      .filter(r => !Number.isNaN(r.t) && !Number.isNaN(r.v) && r.t >= start && r.t <= endClosed)
+      .filter(r => !Number.isNaN(r.t) && !Number.isNaN(r.v) && r.t >= startWithBuffer && r.t <= endClosed)
       .sort((a,b)=>a.t-b.t);
 
-    // 4) Buckets fixes (moyenne 50 si aucun vote)
+    // 4) Buckets fixes depuis le buffer
     const buckets = [];
-    for (let t = start; t <= endClosed; t += cfg.stepMs) buckets.push({ t, vals: [] });
+    for (let t = startWithBuffer; t <= endClosed; t += cfg.stepMs) buckets.push({ t, vals: [] });
 
-    const firstTs = start;
+    const firstTs = startWithBuffer;
     for (const r of rows) {
       const idx = Math.floor((r.t - firstTs) / cfg.stepMs);
       if (idx >= 0 && idx < buckets.length) buckets[idx].vals.push(r.v);
     }
 
-    const bucketMeans = [];
-    for (const b of buckets) {
-      let m;
-      if (b.vals.length > 0) m = b.vals.reduce((a,c)=>a+c,0) / b.vals.length;
-      else m = 50; // ← changement : pas de vote = 50
-      m = Math.max(0, Math.min(100, m));
-      bucketMeans.push({ t: b.t, m, n: b.vals.length });
-    }
+    // mean par bucket (no vote => 50)
+    const means = buckets.map(b => {
+      const n = b.vals.length;
+      const m = n ? (b.vals.reduce((a,c)=>a+c,0) / n) : 50;
+      return { t:b.t, mean: Math.max(0, Math.min(100, m)), n };
+    });
 
-    // 5) Point = moyenne glissante des 5 dernières moyennes de bucket
-    const points = [];
-    for (let i=0; i<bucketMeans.length; i++){
-      const windowStart = Math.max(0, i-4);
-      const slice = bucketMeans.slice(windowStart, i+1);
-      const avg = slice.reduce((a,c)=>a+c.m, 0) / slice.length;
-      points.push({ t: cfg.fmt(new Date(bucketMeans[i].t)), v: +avg.toFixed(1), n: bucketMeans[i].n });
-    }
+    // 5) Lissage "5-last" indépendant de la fenêtre visible : utilise le buffer
+    const smoothed = means.map((_, i) => {
+      const from = Math.max(0, i-4), to = i; // inclus
+      const slice = means.slice(from, to+1);
+      const avg = slice.reduce((a,c)=>a+c.mean, 0) / slice.length;
+      return { t: means[i].t, v: +avg.toFixed(1), n: means[i].n };
+    });
 
-    const current = Math.round(points.at(-1)?.v ?? 50);
+    // 6) On ne renvoie que la partie visible (t >= start)
+    const visible = smoothed.filter(p => p.t >= start);
+    const current = Math.round(visible.at(-1)?.v ?? 50);
 
     return {
       statusCode: 200,
       headers: { 'content-type':'application/json', 'cache-control':'no-store' },
       body: JSON.stringify({
         current,
-        points,
+        points: visible.map(p => ({ t: cfg.fmt(new Date(p.t)), v: p.v, n: p.n })),
         meta: { tf, start, end: endClosed, stepMs: cfg.stepMs }
       })
     };

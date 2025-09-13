@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Humanity Fear Index</title>
+<title>World Feeling</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
@@ -16,6 +16,7 @@
   .title{font-size:40px;line-height:1.15;margin:0;font-weight:700;letter-spacing:.2px}
   .avg{font-size:28px;font-weight:700;letter-spacing:.3px}
   .desc{color:var(--muted);font-size:15px;margin-top:4px}
+  .timer{color:var(--muted);font-size:13px;margin-top:2px}
   .spacer{height:10px}
 
   .card{background:var(--panel);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px}
@@ -54,9 +55,10 @@
 <div class="wrap">
 
   <div class="hero">
-    <h1 class="title">Humanity Fear Index</h1>
+    <h1 class="title">World Feeling</h1>
     <div id="avg" class="avg">-- / 100</div>
-    <div class="desc">Average of community votes over the selected period.</div>
+    <div class="desc">Curve representing humanity’s global fear/hope sentiment across the world.</div>
+    <div id="nextTimer" class="timer">Next update in —</div>
   </div>
   <div class="spacer"></div>
 
@@ -88,15 +90,14 @@
     </div>
   </div>
 
-  <!-- ===== Bloc d'explication (en bas, après le slider) ===== -->
+  <!-- Bloc d’explication en bas -->
   <div class="card infoCard">
     <h3 class="infoTitle">What this index shows</h3>
     <p class="infoText">
-      The Humanity Fear Index captures the community’s perceived “fear vs. confidence” (0 = high fear, 100 = high confidence).
-      Points are computed only when a time bucket ends:
-      <strong>1H</strong>: 1 min · <strong>1D</strong>: 30 min · <strong>7D</strong>: 8 h · <strong>1M</strong>: 1 day · <strong>90D</strong>: 3 days · <strong>1Y</strong>: 2 weeks.
-      Each point equals the moving average of the last 5 bucket means. If a bucket receives no votes, its mean defaults to 50 — so the curve gradually returns to neutral when activity stops.
-      Hover any point to see its exact value and how many votes it includes. You can vote once every 12 hours using the slider above.
+      The index aggregates community votes into fixed time buckets (1H: 1 min · 1D: 30 min · 7D: 8 h · 1M: 1 day · 90D: 3 days · 1Y: 2 weeks).
+      Each bucket’s mean is 50 if no votes occur (so the curve drifts back to neutral when activity stops).
+      Every plotted point is a moving average of the last 5 bucket means, computed once when each bucket closes—previous points never change.
+      Hover a point to see its exact value and how many votes it includes. You can vote once every 12 hours using the slider above.
     </p>
   </div>
 
@@ -119,7 +120,7 @@
   const chart = new Chart(ctx, {
     type: 'line',
     data: { labels: [], datasets: [{
-      label: 'Fear Index',
+      label: 'Fear/Hope',
       data: [],
       _counts: [],
       borderWidth: 3,
@@ -179,12 +180,26 @@
   }
   window.__tickStep = pickTickStep(timeframe);
 
-  /* ===== Scheduler ===== */
-  let nextTimer = null;
+  /* ===== Scheduler & Next-update timer ===== */
+  let nextTimer = null, countdownInterval = null, nextAtTs = 0;
+  function fmtLeft(ms){
+    if (ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60), ss = String(s % 60).padStart(2,'0');
+    return m ? `${m}:${ss}` : `0:${ss}`;
+  }
+  function renderCountdown(){
+    if (!nextAtTs) return;
+    const left = nextAtTs - Date.now();
+    document.getElementById('nextTimer').textContent = `Next update in ${fmtLeft(left)}`;
+  }
   function scheduleNext(meta){
     if (nextTimer) clearTimeout(nextTimer);
-    const nextAt = (meta?.end ?? Date.now()) + (meta?.stepMs ?? 60000);
-    const delay = Math.max(250, nextAt - Date.now());
+    if (countdownInterval) clearInterval(countdownInterval);
+    nextAtTs = (meta?.end ?? Date.now()) + (meta?.stepMs ?? 60000);
+    renderCountdown();
+    countdownInterval = setInterval(renderCountdown, 1000);
+    const delay = Math.max(250, nextAtTs - Date.now());
     nextTimer = setTimeout(() => refresh(), delay);
   }
 
@@ -193,6 +208,7 @@
     b.classList.add('active');
     timeframe = b.dataset.tf;
     if (nextTimer) clearTimeout(nextTimer);
+    if (countdownInterval) clearInterval(countdownInterval);
     window.__tickStep = pickTickStep(timeframe);
     refresh();
   }));
@@ -212,7 +228,15 @@
     const current = (j.current ?? 50);
     const avgEl = document.getElementById('avg');
     avgEl.textContent = `${current} / 100`;
-    avgEl.style.color = valToColor(current);
+    avgEl.style.color = (function(v){
+      if (v<=50){ // red->yellow
+        const t = v/50;
+        return (function(c1,c2,t){ const a=hexToRgb(c1), b=hexToRgb(c2); return `#${[0,0,0].map((_,i)=>Math.round([a.r,a.g,a.b][i]*(1-t)+[b.r,b.g,b.b][i]*t).toString(16).padStart(2,'0')).join('')}`; })('#ef4444','#eab308', t);
+      } else {
+        const t = (v-50)/50;
+        return (function(c1,c2,t){ const a=hexToRgb(c1), b=hexToRgb(c2); return `#${[0,0,0].map((_,i)=>Math.round([a.r,a.g,a.b][i]*(1-t)+[b.r,b.g,b.b][i]*t).toString(16).padStart(2,'0')).join('')}`; })('#eab308','#166534', t);
+      }
+    })(current);
 
     scheduleNext(j.meta);
   }
@@ -238,16 +262,14 @@
     const last = Number(localStorage.getItem('lastVoteTs')||0);
     return Math.max(0, (last + COOLDOWN_MIN*60*1000) - Date.now());
   }
-  function fmtLeft(ms){
-    const m = Math.ceil(ms/60000);
-    if (m >= 60) { const h = Math.floor(m/60), mm = m%60; return `${h}h ${mm}m`; }
-    return `${m} min`;
-  }
   function updateCooldownUI(){
     const left = remainMs();
     if (left > 0){
       btn.disabled = true; btn.classList.add('disabled');
-      msg.className='muted'; msg.textContent = `Next vote in ${fmtLeft(left)}`;
+      msg.className='muted';
+      const m = Math.ceil(left/60000);
+      if (m >= 60) { const h = Math.floor(m/60), mm = m%60; msg.textContent = `Next vote in ${h}h ${mm}m`; }
+      else msg.textContent = `Next vote in ${m} min`;
     }else{
       btn.disabled = false; btn.classList.remove('disabled');
       msg.className='muted'; msg.textContent = '';
@@ -270,11 +292,15 @@
     localStorage.setItem('lastVoteTs', Date.now().toString());
     msg.className='ok'; msg.textContent='Thanks for voting!';
     setTimeout(()=>{ msg.className='muted'; msg.textContent=''; updateCooldownUI(); }, 1500);
+    // Pas de refresh immédiat : la courbe bougera au prochain tick programmé
   }
   btn.addEventListener('click', vote);
 
   // First draw
   refresh();
+
+  // helpers used above
+  function hexToRgb(h){ const m=/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(h); return m?{r:parseInt(m[1],16),g:parseInt(m[2],16),b:parseInt(m[3],16)}:null; }
 </script>
 </body>
 </html>
