@@ -49,6 +49,22 @@
   input[type="range"]{-webkit-appearance:none;appearance:none;width:100%;height:12px;background:linear-gradient(90deg,#ef4444 0%, #eab308 50%, #166534 100%);border-radius:999px;outline:none}
   input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid #0f1220;box-shadow:0 0 0 3px rgba(255,255,255,.2)}
   input[type="range"]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid #0f1220}
+
+  .policyBtn{
+  display:inline-block;
+  padding:12px 24px;
+  border-radius:12px;
+  background:linear-gradient(90deg,#39486a,#3c6b7b);
+  color:#e8ecf1;
+  text-decoration:none;
+  font-weight:600;
+  transition:background .2s,opacity .2s;
+}
+.policyBtn:hover{
+  background:linear-gradient(90deg,#3c6b7b,#39486a);
+  opacity:0.9;
+}
+
 </style>
 </head>
 <body>
@@ -308,5 +324,13 @@
   // First draw
   refresh();
 </script>
+
+<!-- === Privacy Policy button === -->
+<div class="card" style="margin-top:24px;text-align:center">
+  <a href="/privacy.html"
+     class="policyBtn">Privacy Policy</a>
+</div>
+
+
 </body>
 </html>
