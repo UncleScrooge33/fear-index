@@ -24,7 +24,6 @@
   .scale{display:flex;flex-direction:column;gap:8px}
   .scale button{background:transparent;border:1px solid rgba(255,255,255,.1);color:var(--text);padding:10px 12px;border-radius:10px;cursor:pointer;text-align:left}
   .scale button.active{border-color:#7dd3fc;box-shadow:0 0 0 1px rgba(125,211,252,.25) inset}
-  canvas{width:100%;height:380px}
 
   /* Toolbar au-dessus du canvas */
   .chartTools{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px}
@@ -33,6 +32,8 @@
     padding:6px 10px;border-radius:10px;cursor:pointer;font-size:13px
   }
   .miniBtn:disabled{opacity:.5;cursor:not-allowed}
+
+  canvas{width:100%;height:380px}
 
   .sliderCard{margin-top:16px}
   .sliderBox{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
@@ -44,7 +45,7 @@
 
   .infoCard{margin-top:16px}
   .infoTitle{margin:0 0 10px;font-size:18px;font-weight:700}
-  .infoText{color:var(--muted);font-size:14px;line-height:1.55;margin:0}
+  .infoText{color:#9aa3b2;font-size:14px;line-height:1.55;margin:0}
 
   @media (max-width:820px){
     .chartRow{grid-template-columns:1fr}
@@ -59,19 +60,11 @@
   input[type="range"]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid #0f1220}
 
   .policyBtn{
-    display:inline-block;
-    padding:12px 24px;
-    border-radius:12px;
-    background:linear-gradient(90deg,#39486a,#3c6b7b);
-    color:#e8ecf1;
-    text-decoration:none;
-    font-weight:600;
-    transition:background .2s,opacity .2s;
+    display:inline-block;padding:12px 24px;border-radius:12px;
+    background:linear-gradient(90deg,#39486a,#3c6b7b);color:#e8ecf1;text-decoration:none;
+    font-weight:600;transition:background .2s,opacity .2s;
   }
-  .policyBtn:hover{
-    background:linear-gradient(90deg,#3c6b7b,#39486a);
-    opacity:0.9;
-  }
+  .policyBtn:hover{background:linear-gradient(90deg,#3c6b7b,#39486a);opacity:0.9;}
 </style>
 </head>
 <body>
@@ -118,7 +111,6 @@
     </div>
   </div>
 
-  <!-- ===== Info block (bottom) ===== -->
   <div class="card infoCard">
     <h3 class="infoTitle">What this index shows</h3>
     <p class="infoText">
@@ -142,6 +134,25 @@
     if (v<=50){ return blend('#ef4444','#eab308', v/50); }
     return blend('#eab308','#166534', (v-50)/50);
   }
+
+  /* ===== Plugin de clip pour révélation fluide ===== */
+  let __revealActive = false, __revealP = 0; // 0..1
+  Chart.register({
+    id: 'revealClip',
+    beforeDatasetsDraw(chart){
+      if (!__revealActive) return;
+      const {ctx, chartArea} = chart;
+      ctx.save();
+      const w = chartArea.width * __revealP;
+      ctx.beginPath();
+      ctx.rect(chartArea.left, chartArea.top, w, chartArea.height);
+      ctx.clip();
+    },
+    afterDatasetsDraw(chart){
+      if (!__revealActive) return;
+      chart.ctx.restore();
+    }
+  });
 
   /* ===== Chart ===== */
   const ctx = document.getElementById('chart');
@@ -230,11 +241,10 @@
     if (countdownInterval) clearInterval(countdownInterval);
 
     const step = meta?.stepMs ?? 60000;
-    // meta.end = dernier bucket TERMINÉ (= alignedNow - step)
+    // meta.end = dernier bucket terminé (= alignedNow - step)
     // prochaine fermeture = alignedNow + step = meta.end + 2*step
     let nextAt = (meta?.end ?? Date.now()) + 2 * step;
 
-    // si c'est déjà passé (latence), saute par pas jusqu'au futur
     const now = Date.now();
     if (nextAt <= now) {
       const missed = Math.floor((now - nextAt) / step) + 1;
@@ -280,61 +290,45 @@
     scheduleNext(j.meta);
   }
 
-  /* ===== Animate 10s (left→right) ===== */
-  document.getElementById('animateBtn').addEventListener('click', ()=>{
+  /* ===== Animate (clip fluide, 10s) ===== */
+  const animateBtn = document.getElementById('animateBtn');
+  animateBtn.addEventListener('click', ()=> animateReveal(10000));
+
+  function animateReveal(durationMs = 10000){
     if (animActive) return;
     animActive = true;
+    animateBtn.disabled = true;
 
-    const btnA = document.getElementById('animateBtn');
-    const ds   = chart.data.datasets[0];
-    const fullLabels = [...chart.data.labels];
-    const fullData   = [...ds.data];
-    const fullCounts = [...(ds._counts||[])];
-
-    // désactive tooltip/interaction pour une anim fluide
+    // désactive tooltips/interaction pendant l’anim
     const prevTooltip = chart.options.plugins.tooltip.enabled;
     const prevIntersect = chart.options.interaction.intersect;
     chart.options.plugins.tooltip.enabled = false;
     chart.options.interaction.intersect = false;
 
-    // vide et démarre
-    chart.data.labels = [];
-    ds.data = [];
-    ds._counts = [];
-    chart.update();
+    __revealActive = true; __revealP = 0;
+    const t0 = performance.now();
 
-    btnA.disabled = true;
-    const total = fullLabels.length;
-    const duration = 10000; // 10s
-    const start = performance.now();
+    function frame(t){
+      const p = Math.min(1, (t - t0) / durationMs);
+      __revealP = p;
+      chart.draw(); // redessine avec clip (hyper fluide)
 
-    function step(now){
-      const p = Math.min(1, (now - start) / duration);
-      const count = Math.max(1, Math.floor(p * (total - 1)) + 1);
-      chart.data.labels      = fullLabels.slice(0, count);
-      ds.data                = fullData.slice(0, count);
-      ds._counts             = fullCounts.slice(0, count);
-      chart.update('none');
-
-      if (p < 1){
-        requestAnimationFrame(step);
+      if (p < 1 && animActive){
+        requestAnimationFrame(frame);
       } else {
-        // restore
-        chart.data.labels = fullLabels;
-        ds.data           = fullData;
-        ds._counts        = fullCounts;
+        __revealActive = false;
         chart.options.plugins.tooltip.enabled = prevTooltip;
         chart.options.interaction.intersect   = prevIntersect;
         chart.update();
 
         animActive = false;
-        btnA.disabled = false;
-        // on relance un refresh normal (si le tick est passé pendant l'anim)
+        animateBtn.disabled = false;
+        // si un tick est passé pendant l’anim, on rafraîchit maintenant
         refresh();
       }
     }
-    requestAnimationFrame(step);
-  });
+    requestAnimationFrame(frame);
+  }
 
   /* ===== Slider + cooldown 12h ===== */
   const slider = document.getElementById('slider');
@@ -389,7 +383,7 @@
     localStorage.setItem('lastVoteTs', Date.now().toString());
     msg.className='ok'; msg.textContent = 'Thanks for voting!';
     setTimeout(()=>{ msg.className='muted'; msg.textContent=''; updateCooldownUI(); }, 1500);
-    // pas de refresh ici : la courbe bouge au prochain tick planifié
+    // pas de refresh ici : la courbe bougera au prochain tick planifié
   }
   btn.addEventListener('click', vote);
 
