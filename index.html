@@ -26,6 +26,14 @@
   .scale button.active{border-color:#7dd3fc;box-shadow:0 0 0 1px rgba(125,211,252,.25) inset}
   canvas{width:100%;height:380px}
 
+  /* Toolbar au-dessus du canvas */
+  .chartTools{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px}
+  .miniBtn{
+    background:transparent;border:1px solid rgba(255,255,255,.18);color:#e8ecf1;
+    padding:6px 10px;border-radius:10px;cursor:pointer;font-size:13px
+  }
+  .miniBtn:disabled{opacity:.5;cursor:not-allowed}
+
   .sliderCard{margin-top:16px}
   .sliderBox{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
   .valueBadge{min-width:64px;text-align:center;padding:10px 12px;border:1px solid rgba(255,255,255,.1);border-radius:10px}
@@ -51,20 +59,19 @@
   input[type="range"]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid #0f1220}
 
   .policyBtn{
-  display:inline-block;
-  padding:12px 24px;
-  border-radius:12px;
-  background:linear-gradient(90deg,#39486a,#3c6b7b);
-  color:#e8ecf1;
-  text-decoration:none;
-  font-weight:600;
-  transition:background .2s,opacity .2s;
-}
-.policyBtn:hover{
-  background:linear-gradient(90deg,#3c6b7b,#39486a);
-  opacity:0.9;
-}
-
+    display:inline-block;
+    padding:12px 24px;
+    border-radius:12px;
+    background:linear-gradient(90deg,#39486a,#3c6b7b);
+    color:#e8ecf1;
+    text-decoration:none;
+    font-weight:600;
+    transition:background .2s,opacity .2s;
+  }
+  .policyBtn:hover{
+    background:linear-gradient(90deg,#3c6b7b,#39486a);
+    opacity:0.9;
+  }
 </style>
 </head>
 <body>
@@ -87,7 +94,12 @@
       <button data-tf="90D">90D</button>
       <button data-tf="1Y">1Y</button>
     </div>
-    <div><canvas id="chart"></canvas></div>
+    <div>
+      <div class="chartTools">
+        <button id="animateBtn" class="miniBtn">Animate</button>
+      </div>
+      <canvas id="chart"></canvas>
+    </div>
   </div>
 
   <div class="card sliderCard">
@@ -179,6 +191,9 @@
     }
   });
 
+  /* ===== Animation state ===== */
+  let animActive = false;
+
   /* ===== Default timeframe = 1H ===== */
   const tfButtons = Array.from(document.querySelectorAll('.scale button'));
   let timeframe = '1H';
@@ -246,6 +261,7 @@
 
   /* ===== Fetch & bind ===== */
   async function refresh(){
+    if (animActive) return; // ne pas casser l’animation locale
     const url = '/.netlify/functions/read-votes?tf=' + timeframe;
     const r = await fetch(url, { cache:'no-store' });
     const j = await r.json();
@@ -263,6 +279,62 @@
 
     scheduleNext(j.meta);
   }
+
+  /* ===== Animate 10s (left→right) ===== */
+  document.getElementById('animateBtn').addEventListener('click', ()=>{
+    if (animActive) return;
+    animActive = true;
+
+    const btnA = document.getElementById('animateBtn');
+    const ds   = chart.data.datasets[0];
+    const fullLabels = [...chart.data.labels];
+    const fullData   = [...ds.data];
+    const fullCounts = [...(ds._counts||[])];
+
+    // désactive tooltip/interaction pour une anim fluide
+    const prevTooltip = chart.options.plugins.tooltip.enabled;
+    const prevIntersect = chart.options.interaction.intersect;
+    chart.options.plugins.tooltip.enabled = false;
+    chart.options.interaction.intersect = false;
+
+    // vide et démarre
+    chart.data.labels = [];
+    ds.data = [];
+    ds._counts = [];
+    chart.update();
+
+    btnA.disabled = true;
+    const total = fullLabels.length;
+    const duration = 10000; // 10s
+    const start = performance.now();
+
+    function step(now){
+      const p = Math.min(1, (now - start) / duration);
+      const count = Math.max(1, Math.floor(p * (total - 1)) + 1);
+      chart.data.labels      = fullLabels.slice(0, count);
+      ds.data                = fullData.slice(0, count);
+      ds._counts             = fullCounts.slice(0, count);
+      chart.update('none');
+
+      if (p < 1){
+        requestAnimationFrame(step);
+      } else {
+        // restore
+        chart.data.labels = fullLabels;
+        ds.data           = fullData;
+        ds._counts        = fullCounts;
+        chart.options.plugins.tooltip.enabled = prevTooltip;
+        chart.options.interaction.intersect   = prevIntersect;
+        chart.update();
+
+        animActive = false;
+        btnA.disabled = false;
+        // on relance un refresh normal (si le tick est passé pendant l'anim)
+        refresh();
+      }
+    }
+    requestAnimationFrame(step);
+  });
 
   /* ===== Slider + cooldown 12h ===== */
   const slider = document.getElementById('slider');
@@ -327,10 +399,8 @@
 
 <!-- === Privacy Policy button === -->
 <div class="card" style="margin-top:24px;text-align:center">
-  <a href="/privacy.html"
-     class="policyBtn">Privacy Policy</a>
+  <a href="/privacy.html" class="policyBtn">Privacy Policy</a>
 </div>
-
 
 </body>
 </html>
