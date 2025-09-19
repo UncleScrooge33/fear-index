@@ -54,7 +54,7 @@ exports.handler = async (event) => {
       .filter(r => !Number.isNaN(r.t) && !Number.isNaN(r.v) && r.t >= startWithBuffer && r.t <= endClosed)
       .sort((a,b)=>a.t-b.t);
 
-    // 4) Buckets fixes (no vote => rawMean = 50)
+    // 4) Buckets fixes (nous allons y ajouter baseline simulée)
     const buckets = [];
     for (let t = startWithBuffer; t <= endClosed; t += cfg.stepMs) buckets.push({ t, vals: [] });
 
@@ -64,13 +64,46 @@ exports.handler = async (event) => {
       if (idx >= 0 && idx < buckets.length) buckets[idx].vals.push(r.v);
     }
 
+    // --- utilitaires pour baseline déterministe par bucket ---
+    function djb2hash(str){
+      let h = 5381;
+      for (let i=0;i<str.length;i++) h = ((h << 5) + h) + str.charCodeAt(i); // h * 33 + c
+      return Math.abs(h);
+    }
+    function baselineForTimestamp(ts){
+      // ts est le timestamp du début du bucket (number)
+      // retourne { count: 10..40, mean: 40.00..45.00 }
+      const s = String(ts);
+      const h = djb2hash(s + '_base_v1'); // stable entre appels
+      const count = 10 + (h % 31); // 10..40
+      // pour la mean, on veut 40.00 .. 45.00 avec 2 décimales
+      const h2 = djb2hash(s + '_mean_v1');
+      const centi = h2 % 501; // 0..500 -> 0.00..5.00
+      const mean = 40 + (centi / 100);
+      return { count, mean: Math.round(mean * 100) / 100 };
+    }
+
+    // 5) Calcul des raw means A) réels B) baseline C) combinaison
     const raw = buckets.map(b => {
-      const n = b.vals.length;
-      const m = n ? (b.vals.reduce((a,c)=>a+c,0) / n) : 50;         // ← no vote = 50
-      return { t: b.t, mean: Math.max(0, Math.min(100, m)), n };
+      const nReal = b.vals.length;
+      const sumReal = nReal ? b.vals.reduce((a,c)=>a+c,0) : 0;
+      const realMean = nReal ? (sumReal / nReal) : null;
+
+      // baseline simulée (déterministe)
+      const { count: baseCount, mean: baseMean } = baselineForTimestamp(b.t);
+
+      // combine baseline + réels
+      if (nReal && nReal > 0) {
+        const combinedCount = baseCount + nReal;
+        const combinedMean = ((baseMean * baseCount) + sumReal) / combinedCount;
+        return { t: b.t, mean: Math.max(0, Math.min(100, combinedMean)), n: combinedCount };
+      } else {
+        // pas de votes réels -> on affiche la baseline
+        return { t: b.t, mean: Math.max(0, Math.min(100, baseMean)), n: baseCount };
+      }
     });
 
-    // 5) EMA : y[i] = α*raw[i] + (1-α)*y[i-1]
+    // 6) EMA : y[i] = α*raw[i] + (1-α)*y[i-1]
     const a = cfg.alpha;
     const ema = [];
     let prev = raw.length ? raw[0].mean : 50; // init EMA
@@ -81,7 +114,7 @@ exports.handler = async (event) => {
       ema.push({ t: raw[i].t, v: +y.toFixed(1), n: raw[i].n });
     }
 
-    // 6) Ne renvoyer que la partie visible (t >= start)
+    // 7) Ne renvoyer que la partie visible (t >= start)
     const visible = ema.filter(p => p.t >= start);
     const current = Math.round(visible.at(-1)?.v ?? 50);
 
