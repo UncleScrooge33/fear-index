@@ -12,12 +12,12 @@ exports.handler = async (event) => {
 
     // Périodes (buckets terminés uniquement) + alpha EMA par échelle
     const cfg = {
-      '1H':  { spanMs: 60*60*1000,         stepMs: 1*60*1000,      fmt: d=>d.toISOString().slice(11,16), alpha: 0.35 },
-      '1D':  { spanMs: 24*60*60*1000,      stepMs: 30*60*1000,     fmt: d=>d.toISOString().slice(11,16), alpha: 0.30 },
-      '7D':  { spanMs: 7*24*60*60*1000,    stepMs: 8*60*60*1000,   fmt: d=>d.toISOString().slice(5,10),  alpha: 0.28 },
-      '1M':  { spanMs: 30*24*60*60*1000,   stepMs: 24*60*60*1000,  fmt: d=>d.toISOString().slice(0,10),  alpha: 0.25 },
-      '90D': { spanMs: 90*24*60*60*1000,   stepMs: 3*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10),  alpha: 0.22 },
-      '1Y':  { spanMs: 365*24*60*60*1000,  stepMs: 14*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10), alpha: 0.20 },
+      '1H':  { spanMs: 60*60*1000,          stepMs: 1*60*1000,       fmt: d=>d.toISOString().slice(11,16), alpha: 0.35 },
+      '1D':  { spanMs: 24*60*60*1000,       stepMs: 30*60*1000,      fmt: d=>d.toISOString().slice(11,16), alpha: 0.30 },
+      '7D':  { spanMs: 7*24*60*60*1000,     stepMs: 8*60*60*1000,    fmt: d=>d.toISOString().slice(5,10),  alpha: 0.28 },
+      '1M':  { spanMs: 30*24*60*60*1000,    stepMs: 24*60*60*1000,   fmt: d=>d.toISOString().slice(0,10),  alpha: 0.25 },
+      '90D': { spanMs: 90*24*60*60*1000,    stepMs: 3*24*60*60*1000, fmt: d=>d.toISOString().slice(0,10),  alpha: 0.22 },
+      '1Y':  { spanMs: 365*24*60*60*1000,   stepMs: 14*24*60*60*1000,fmt: d=>d.toISOString().slice(0,10),  alpha: 0.20 },
     }[tf] || { spanMs: 24*60*60*1000, stepMs: 30*60*1000, fmt: d=>d.toISOString().slice(11,16), alpha: 0.30 };
 
     const now = Date.now();
@@ -42,7 +42,7 @@ exports.handler = async (event) => {
     // 2) Submissions (verified)
     const headers = { Authorization: `Bearer ${TOKEN}` };
     const baseUrl = `https://api.netlify.com/api/v1/forms/${form.id}/submissions?per_page=1000`;
-    let subs = await fetch(baseUrl, { headers }).then(r=>r.json());
+    const subs = await fetch(baseUrl, { headers }).then(r=>r.json());
 
     // 3) Filtre fenêtre [startWithBuffer, endClosed] + normalisation
     const rows = (Array.isArray(subs) ? subs : [])
@@ -65,21 +65,32 @@ exports.handler = async (event) => {
     }
 
     // --- utilitaires pour baseline déterministe par bucket ---
+    const SCALE_EXP = 0.65; // sous-linéaire : augmente avec la durée du bucket sans exploser
+
     function djb2hash(str){
       let h = 5381;
       for (let i=0;i<str.length;i++) h = ((h << 5) + h) + str.charCodeAt(i); // h * 33 + c
       return Math.abs(h);
     }
-    function baselineForTimestamp(ts){
-      // ts est le timestamp du début du bucket (number)
-      // retourne { count: 10..40, mean: 40.00..45.00 }
-      const s = String(ts);
-      const h = djb2hash(s + '_base_v1'); // stable entre appels
-      const count = 10 + (h % 31); // 10..40
-      // pour la mean, on veut 40.00 .. 45.00 avec 2 décimales
-      const h2 = djb2hash(s + '_mean_v1');
+
+    // baseline dépend maintenant de la taille du bucket (stepMs)
+    function baselineForTimestamp(ts, stepMs){
+      // 1) taux “par minute” déterministe (10..40)
+      const h = djb2hash(String(ts) + '_rate_v1');
+      const basePerMin = 10 + (h % 31); // 10..40
+
+      // 2) facteur durée (minutes^SCALE_EXP)
+      const minutes = Math.max(1, Math.round(stepMs / 60000));
+      const factor = Math.pow(minutes, SCALE_EXP);
+
+      // 3) nombre total de votes baseline pour CE point
+      const count = Math.max(1, Math.round(basePerMin * factor));
+
+      // 4) moyenne simulée 40.00..45.00 (déterministe)
+      const h2 = djb2hash(String(ts) + '_mean_v1');
       const centi = h2 % 501; // 0..500 -> 0.00..5.00
       const mean = 40 + (centi / 100);
+
       return { count, mean: Math.round(mean * 100) / 100 };
     }
 
@@ -87,18 +98,16 @@ exports.handler = async (event) => {
     const raw = buckets.map(b => {
       const nReal = b.vals.length;
       const sumReal = nReal ? b.vals.reduce((a,c)=>a+c,0) : 0;
-      const realMean = nReal ? (sumReal / nReal) : null;
 
-      // baseline simulée (déterministe)
-      const { count: baseCount, mean: baseMean } = baselineForTimestamp(b.t);
+      // baseline simulée (déterministe, scale par taille de bucket)
+      const { count: baseCount, mean: baseMean } = baselineForTimestamp(b.t, cfg.stepMs);
 
-      // combine baseline + réels
       if (nReal && nReal > 0) {
         const combinedCount = baseCount + nReal;
         const combinedMean = ((baseMean * baseCount) + sumReal) / combinedCount;
         return { t: b.t, mean: Math.max(0, Math.min(100, combinedMean)), n: combinedCount };
       } else {
-        // pas de votes réels -> on affiche la baseline
+        // pas de votes réels -> baseline seule
         return { t: b.t, mean: Math.max(0, Math.min(100, baseMean)), n: baseCount };
       }
     });
